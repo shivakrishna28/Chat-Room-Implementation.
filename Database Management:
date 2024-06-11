@@ -1,0 +1,5 @@
+CREATE DATABASE chat_app;
+CREATE USER 'chat_user'@'localhost' IDENTIFIED BY 'password';
+GRANT ALL PRIVILEGES ON chat_app.* TO 'chat_user'@'localhost';
+FLUSH PRIVILEGES;
+pip install Flask Flask-SQLAlchemy Flask-Bcrypt PyMySQL
