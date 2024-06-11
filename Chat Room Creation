@@ -1,0 +1,80 @@
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    userId = db.Column(db.String(50), unique=True, nullable=False)
+    deviceId = db.Column(db.String(50), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    phone = db.Column(db.String(15), nullable=False)
+    password = db.Column(db.String(100), nullable=False)
+    availCoins = db.Column(db.Integer, default=0)
+    is_prime = db.Column(db.Boolean, default=False)  # New field to indicate prime membership
+
+class ChatRoom(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    roomId = db.Column(db.String(50), unique=True, nullable=False)
+    roomName = db.Column(db.String(100), nullable=False)
+    ownerId = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    participants = db.relationship('ChatRoomParticipant', backref='chatroom', lazy=True)
+
+class ChatRoomParticipant(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    roomId = db.Column(db.Integer, db.ForeignKey('chat_room.id'), nullable=False)
+    userId = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+from functools import wraps
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('x-access-token')
+        if not token:
+            return jsonify({'message': 'Token is missing!'}), 403
+        
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user = User.query.filter_by(userId=data['userId']).first()
+        except:
+            return jsonify({'message': 'Token is invalid!'}), 403
+        
+        return f(current_user, *args, **kwargs)
+    
+    return decorated
+
+@app.route('/api/chatrooms', methods=['POST'])
+@token_required
+def create_chatroom(current_user):
+    if not current_user.is_prime:
+        return jsonify({'message': 'You must be a prime member to create a chat room.'}), 403
+
+    data = request.get_json()
+    new_room = ChatRoom(
+        roomId=data['roomId'],
+        roomName=data['roomName'],
+        ownerId=current_user.id
+    )
+    db.session.add(new_room)
+    db.session.commit()
+
+    return jsonify({'message': 'Chat room created successfully!', 'roomId': new_room.roomId})
+
+@app.route('/api/chatrooms/<room_id>/join', methods=['POST'])
+@token_required
+def join_chatroom(current_user, room_id):
+    room = ChatRoom.query.filter_by(roomId=room_id).first()
+
+    if not room:
+        return jsonify({'message': 'Chat room not found.'}), 404
+
+    if len(room.participants) >= 6:
+        return jsonify({'message': 'Chat room has reached its maximum capacity.'}), 403
+
+    new_participant = ChatRoomParticipant(
+        roomId=room.id,
+        userId=current_user.id
+    )
+    db.session.add(new_participant)
+    db.session.commit()
+
+    return jsonify({'message': 'Joined the chat room successfully!'})
+
+# To create the tables in the database, you would run
+# db.create_all()
