@@ -1,0 +1,153 @@
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+import jwt
+import datetime
+from functools import wraps
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+app.config['SECRET_KEY'] = 'your_secret_key'
+
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+
+# User model with prime membership field
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    userId = db.Column(db.String(50), unique=True, nullable=False)
+    deviceId = db.Column(db.String(50), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    phone = db.Column(db.String(15), nullable=False)
+    password = db.Column(db.String(100), nullable=False)
+    availCoins = db.Column(db.Integer, default=0)
+    is_prime = db.Column(db.Boolean, default=False)
+
+# ChatRoom and ChatRoomParticipant models
+class ChatRoom(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    roomId = db.Column(db.String(50), unique=True, nullable=False)
+    roomName = db.Column(db.String(100), nullable=False)
+    ownerId = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    participants = db.relationship('ChatRoomParticipant', backref='chatroom', lazy=True)
+
+class ChatRoomParticipant(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    roomId = db.Column(db.Integer, db.ForeignKey('chat_room.id'), nullable=False)
+    userId = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+# Helper function to require token
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('x-access-token')
+        if not token:
+            return jsonify({'message': 'Token is missing!'}), 403
+        
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user = User.query.filter_by(userId=data['userId']).first()
+        except:
+            return jsonify({'message': 'Token is invalid!'}), 403
+        
+        return f(current_user, *args, **kwargs)
+    
+    return decorated
+
+# Registration endpoint
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    hashed_password = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+    
+    new_user = User(
+        userId=data['userId'],
+        deviceId=data['deviceId'],
+        name=data['name'],
+        phone=data['phone'],
+        password=hashed_password,
+        availCoins=data['availCoins']
+    )
+    
+    db.session.add(new_user)
+    db.session.commit()
+    
+    return jsonify({'message': 'User registered successfully!'})
+
+# Login endpoint
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(userId=data['userId']).first()
+    
+    if user and bcrypt.check_password_hash(user.password, data['password']):
+        token = jwt.encode({
+            'userId': user.userId,
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        }, app.config['SECRET_KEY'], algorithm='HS256')
+        
+        return jsonify({'token': token})
+    
+    return jsonify({'message': 'Invalid credentials!'})
+
+# Create chatroom endpoint
+@app.route('/api/chatrooms', methods=['POST'])
+@token_required
+def create_chatroom(current_user):
+    if not current_user.is_prime:
+        return jsonify({'message': 'You must be a prime member to create a chat room.'}), 403
+
+    data = request.get_json()
+    new_room = ChatRoom(
+        roomId=data['roomId'],
+        roomName=data['roomName'],
+        ownerId=current_user.id
+    )
+    db.session.add(new_room)
+    db.session.commit()
+
+    return jsonify({'message': 'Chat room created successfully!', 'roomId': new_room.roomId})
+
+# Join chatroom endpoint
+@app.route('/api/chatrooms/<room_id>/join', methods=['POST'])
+@token_required
+def join_chatroom(current_user, room_id):
+    room = ChatRoom.query.filter_by(roomId=room_id).first()
+
+    if not room:
+        return jsonify({'message': 'Chat room not found.'}), 404
+
+    if len(room.participants) >= 6:
+        return jsonify({'message': 'Chat room has reached its maximum capacity.'}), 403
+
+    new_participant = ChatRoomParticipant(
+        roomId=room.id,
+        userId=current_user.id
+    )
+    db.session.add(new_participant)
+    db.session.commit()
+
+    return jsonify({'message': 'Joined the chat room successfully!'})
+
+# Profile retrieval endpoint
+@app.route('/api/profile/<user_id>', methods=['GET'])
+@token_required
+def get_profile(current_user, user_id):
+    user = User.query.filter_by(userId=user_id).first()
+
+    if not user:
+        return jsonify({'message': 'User not found.'}), 404
+
+    user_data = {
+        'userId': user.userId,
+        'name': user.name,
+        'phone': user.phone,
+        'availCoins': user.availCoins,
+        'is_prime': user.is_prime
+    }
+
+    return jsonify(user_data)
+
+if __name__ == '__main__':
+    db.create_all()
+    app.run(debug=True)
